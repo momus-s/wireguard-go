@@ -1,0 +1,145 @@
+## Academic Exploration: Modifying ChaCha20
+
+This report details an academic exercise in modifying the ChaCha20 stream cipher implementation found in `device/chacha20_custom.go` within the `wireguard-go` codebase. **NOTE: These modifications are purely for educational purposes and result in a non-standard, likely insecure algorithm that is incompatible with standard WireGuard.**
+
+### Original `quarterRound` Function (Conceptual)
+
+The original `quarterRound` function in `device/chacha20_custom.go` (before academic modifications) is based on the standard ChaCha20 quarter round, using specific bit rotation constants:
+
+```go
+func quarterRound(x *[16]uint32, a, b, c, d int) {
+	x[a] += x[b]
+	x[d] ^= x[a]
+	x[d] = (x[d] << 16) | (x[d] >> (32 - 16)) // Original rotation
+
+	x[c] += x[d]
+	x[b] ^= x[c]
+	x[b] = (x[b] << 12) | (x[b] >> (32 - 12)) // Original rotation
+
+	x[a] += x[b]
+	x[d] ^= x[a]
+	x[d] = (x[d] << 8) | (x[d] >> (32 - 8)) // Original rotation
+
+	x[c] += x[d]
+	x[b] ^= x[c]
+	x[b] = (x[b] << 7) | (x[b] >> (32 - 7)) // Original rotation
+}
+```
+
+### Academic Modifications to `quarterRound` Function
+
+For academic exploration, the bit rotation constants were modified, and a simple addition operation was added. The modified `quarterRound` function now looks like this:
+
+```go
+func quarterRound(x *[16]uint32, a, b, c, d int) {
+	x[a] += x[b]
+	x[d] ^= x[a]
+	x[d] = (x[d] << 10) | (x[d] >> (32 - 10)) // Modified rotation
+	x[d] += 1 // Academic modification: Added a constant
+
+	x[c] += x[d]
+	x[b] ^= x[c]
+	x[b] = (x[b] << 14) | (x[b] >> (32 - 14)) // Modified rotation
+
+	x[a] += x[b]
+	x[d] ^= x[a]
+	x[d] = (x[d] << 6) | (x[d] >> (32 - 6)) // Modified rotation
+
+	x[c] += x[d]
+	x[b] ^= x[c]
+	x[b] = (x[b] << 9) | (x[b] >> (32 - 9)) // Modified rotation
+}
+```
+
+### Modification to Nonce/Counter Loading in `chachaBlock24`
+
+Initially, an out-of-bounds error occurred when loading the 16-byte nonce and counter into the state array `x` due to incorrect indexing. The original (erroneous) loading logic was:
+
+```go
+	// Counter
+	x[12] = counter
+	// 16-byte nonce
+	for i := 0; i < 4; i++ {
+		// ... bounds checks ...
+		x[13+i] = binary.LittleEndian.Uint32(nonce[start:end]) // Accesses x[13] through x[16]
+	}
+```
+
+To fix the error and map the 16-byte nonce and counter into the 16-word state array `x` (indices 0-15), the loading logic was modified to place the nonce words at indices 11-14 and the counter at index 15:
+
+```go
+	// 16-byte nonce (mapped to x[11] through x[14])
+	for i := 0; i < 4; i++ {
+		// ... bounds checks ...
+		x[11+i] = binary.LittleEndian.Uint32(nonce[start:end]) // Mapped to x[11] through x[14]
+	}
+	// Counter (mapped to x[15])
+	x[15] = counter // Mapped to x[15]
+```
+
+### Testing the Modified Algorithm
+
+The file `device/chacha20_custom_test.go` contains tests to verify the behavior of the `EncryptChaCha20_24` function.
+
+`TestSimpleCustomChaCha20_24` verifies that encrypting and then decrypting with the custom algorithm recovers the original plaintext. This test passed after the nonce/counter loading fix, confirming the internal consistency of the modified algorithm as a stream cipher.
+
+`TestCustomChaCha20_24_vs_Standard` compares the output of the custom algorithm with the standard Go ChaCha20 library. Initially, this test only printed the outputs and timings. To explicitly demonstrate that the academic modifications resulted in different output, an assertion was added:
+
+```go
+func TestCustomChaCha20_24_vs_Standard(t *testing.T) {
+	// ... existing code for setup and encryption ...
+
+	fmt.Printf("Standard ChaCha20 (20 rounds, 12-byte nonce) output: %x...\n", stdOut[:16])
+	fmt.Printf("Custom ChaCha20 (24 rounds, 16-byte nonce) output: %x...\n", customOut[:16])
+	fmt.Printf("Standard ChaCha20 time: %v for %d iterations\n", elapsedStd, iters)
+	fmt.Printf("Custom ChaCha20_24 time: %v for %d iterations\n", elapsedCustom, iters)
+
+	// Academic comparison: Ensure outputs are different
+	if len(stdOut) != len(customOut) {
+		t.Fatalf("Output lengths mismatch: standard %d, custom %d", len(stdOut), len(customOut))
+	}
+	if string(stdOut) == string(customOut) {
+		t.Fatalf("Academically modified ChaCha20 output matches standard ChaCha20 output, which is unexpected.")
+	}
+}
+```
+
+### Running the Tests
+
+To run all tests in the `device` package:
+```bash
+go test ./device
+```
+
+To run only the ChaCha20 related tests with verbose output to see the comparison printf statements:
+```bash
+go test -v ./device -run Test.*ChaCha20.*
+```
+
+### Example Filtered Test Output
+
+The output from the filtered, verbose test run shows the comparison of the outputs and timings. Note that the hexadecimal outputs are different, confirming the modification was successful in changing the algorithm's output:
+
+```
+Standard ChaCha20 (20 rounds, 12-byte nonce) output: aa2aff9018b5654b502260c92649184c...
+Custom ChaCha20 (24 rounds, 16-byte nonce) output: a2816be6f7a1b354379d7da8579b876a...
+Standard ChaCha20 time: 17.8791ms for 10000 iterations
+Custom ChaCha20_24 time: 3.5894084s for 10000 iterations
+--- PASS: TestCustomChaCha20_24_vs_Standard (3.61s)
+=== RUN   TestSimpleCustomChaCha20_24
+DEBUG: nonce len: 16
+DEBUG: nonce[0:4] (len=16)
+DEBUG: nonce[4:8] (len=16)
+DEBUG: nonce[8:12] (len=16)
+DEBUG: nonce[12:16] (len=16)
+DEBUG: nonce len: 16
+DEBUG: nonce[0:4] (len=16)
+DEBUG: nonce[4:8] (len=16)
+DEBUG: nonce[8:12] (len=16)
+DEBUG: nonce[12:16] (len=16)
+--- PASS: TestSimpleCustomChaCha20_24 (0.00s)
+PASS
+ok      golang.zx2c4.com/wireguard/device       3.817s
+```
+
+This academic exercise demonstrates how modifying the internal operations of a cryptographic primitive alters its output, making it incompatible with standard implementations and highlighting the importance of using standardized, peer-reviewed algorithms for real-world security. 
